@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VanillaWarp</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base: #f5f2ec; 
+            --bg-surface: rgba(255, 255, 255, 0.65); 
+            --bg-surface-hover: rgba(255, 255, 255, 0.85);
+            --border-faint: rgba(28, 25, 23, 0.1); 
+            --border-focus: rgba(28, 25, 23, 0.25);
+            --text-main: #1c1917; 
+            --text-muted: #57534e; 
+            --text-faint: #a8a29e;
+            --accent: #d83021; 
+            --accent-hover: #b02316; 
+            --danger: #991b1b;
+            --font-ui: 'Inter', system-ui, sans-serif; 
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            font-family: var(--font-ui); 
+            background-color: var(--bg-base); 
+            color: var(--text-main); 
+            min-height: 100vh; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            overflow: hidden;
+        }
+
+        /* Abstract Moving Gradients */
+        .bg-canvas { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+        .blob-red {
+            position: absolute; top: -10%; left: 10%; width: 50vw; height: 70vh;
+            background: radial-gradient(circle, #e63920 0%, transparent 70%);
+            opacity: 0.8; filter: blur(80px);
+            animation: float-red 20s ease-in-out infinite alternate;
+        }
+        .blob-black {
+            position: absolute; bottom: -20%; right: 5%; width: 45vw; height: 60vh;
+            background: radial-gradient(circle, #1a1a1a 0%, transparent 70%);
+            opacity: 0.6; filter: blur(90px);
+            animation: float-black 25s ease-in-out infinite alternate-reverse;
+        }
+        @keyframes float-red { 0% { transform: translate(0, 0) scale(1); } 100% { transform: translate(-10vw, 15vh) scale(1.1); } }
+        @keyframes float-black { 0% { transform: translate(0, 0) scale(1); } 100% { transform: translate(-15vw, -10vh) scale(1.15); } }
+
+        /* Splash Screen */
+        #splash { position: fixed; inset: 0; z-index: 50; background: var(--bg-base); display: flex; flex-direction: column; align-items: center; justify-content: center; transition: opacity 0.4s ease; }
+        #splash.gone { opacity: 0; pointer-events: none; }
+        .p2p-anim { display: flex; align-items: center; gap: 8px; margin-bottom: 24px; }
+        .node { width: 14px; height: 14px; border-radius: 50%; background: var(--text-main); }
+        .link { width: 80px; height: 2px; background: var(--border-faint); position: relative; overflow: hidden; }
+        .packet { position: absolute; top: 0; left: 0; width: 20px; height: 100%; background: var(--accent); animation: transfer 1s linear infinite; }
+        @keyframes transfer { 0% { transform: translateX(-20px); } 100% { transform: translateX(80px); } }
+        .splash-text { font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; }
+
+        /* UI Panel (Glassmorphism) */
+        .container { width: 100%; max-width: 460px; padding: 24px; z-index: 10; }
+        .panel { 
+            background: var(--bg-surface); 
+            backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255, 255, 255, 0.4); 
+            border-radius: 16px; padding: 32px; 
+            box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.1); 
+        }
+        
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; }
+        .header h1 { font-size: 1.25rem; font-weight: 600; letter-spacing: -0.5px; }
+        .badge { font-family: var(--font-mono); font-size: 0.65rem; padding: 4px 8px; background: rgba(216, 48, 33, 0.1); color: var(--accent); border: 1px solid rgba(216, 48, 33, 0.2); border-radius: 6px; font-weight: 600; }
+
+        .tabs { display: flex; background: rgba(28, 25, 23, 0.05); padding: 4px; border-radius: 10px; margin-bottom: 24px; }
+        .tab { flex: 1; padding: 10px; background: transparent; border: none; color: var(--text-muted); font-family: var(--font-ui); font-weight: 500; font-size: 0.85rem; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
+        .tab.on { background: #ffffff; color: var(--text-main); box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
+        .view { display: none; }
+        .view.on { display: block; animation: fadeIn 0.2s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+        .dropzone { border: 1.5px dashed var(--border-focus); border-radius: 10px; padding: 40px 20px; text-align: center; cursor: pointer; transition: all 0.2s; background: rgba(255, 255, 255, 0.3); margin-bottom: 16px; }
+        .dropzone:hover, .dropzone.over { border-color: var(--accent); background: rgba(255, 255, 255, 0.7); }
+        .dropzone-icon { font-size: 24px; margin-bottom: 12px; }
+        .dropzone-text { font-size: 0.9rem; font-weight: 500; }
+        #fileInput { display: none; }
+
+        .file-list { display: none; background: rgba(255, 255, 255, 0.5); border: 1px solid var(--border-faint); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; align-items: center; justify-content: space-between; }
+        .file-list.on { display: flex; }
+        .file-info { display: flex; flex-direction: column; overflow: hidden; }
+        .file-name { font-size: 0.875rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+        .file-size { font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-muted); margin-top: 4px; }
+        .btn-clear { background: transparent; border: 1px solid var(--border-focus); color: var(--text-muted); padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 500; cursor: pointer; transition: all 0.2s; }
+        .btn-clear:hover { background: #ffffff; color: var(--text-main); }
+
+        /* Turbo Mode Toggle */
+        .toggle-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding: 12px 16px; background: rgba(255, 255, 255, 0.4); border: 1px solid var(--border-faint); border-radius: 10px; transition: all 0.2s; }
+        .toggle-row:hover { background: rgba(255, 255, 255, 0.7); }
+        .toggle-label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; font-weight: 600; }
+        .toggle-sub { font-family: var(--font-mono); font-size: 0.65rem; color: var(--text-muted); font-weight: 400; letter-spacing: 0.5px; }
+        .switch { position: relative; display: inline-block; width: 42px; height: 24px; flex-shrink: 0; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--border-focus); transition: .3s; border-radius: 24px; }
+        .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+        input:checked + .slider { background-color: var(--accent); }
+        input:checked + .slider:before { transform: translateX(18px); }
+
+        .btn { width: 100%; padding: 14px; background: var(--accent); color: #ffffff; border: none; border-radius: 10px; font-family: var(--font-ui); font-size: 0.9rem; font-weight: 500; cursor: pointer; transition: all 0.2s; }
+        .btn:hover:not(:disabled) { background: var(--accent-hover); box-shadow: 0 4px 12px rgba(216, 48, 33, 0.25); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+
+        .code-display { display: none; background: rgba(255, 255, 255, 0.5); border: 1px solid var(--border-faint); border-radius: 10px; padding: 24px; text-align: center; margin-top: 16px; }
+        .code-display.on { display: block; animation: fadeIn 0.2s ease; }
+        .code-label { font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+        .code-val { font-family: var(--font-mono); font-size: 2.25rem; font-weight: 600; letter-spacing: 6px; margin-bottom: 24px; user-select: all; }
+        .action-row { display: flex; gap: 10px; }
+        .btn-action { flex: 1; padding: 10px; background: #ffffff; border: 1px solid var(--border-focus); border-radius: 8px; font-size: 0.8rem; font-family: var(--font-ui); font-weight: 500; cursor: pointer; transition: all 0.2s; }
+        .btn-action:hover { border-color: var(--text-main); }
+
+        .input-group { margin-bottom: 24px; }
+        .input-label { display: block; font-family: var(--font-ui); font-size: 0.8rem; font-weight: 500; margin-bottom: 8px; }
+        .input-field { width: 100%; padding: 16px; background: rgba(255, 255, 255, 0.7); border: 1.5px solid var(--border-focus); border-radius: 10px; font-family: var(--font-mono); font-size: 1.5rem; letter-spacing: 4px; text-align: center; text-transform: uppercase; outline: none; transition: border-color 0.2s; color: var(--text-main); }
+        .input-field:focus { border-color: var(--accent); background: #ffffff; }
+        .input-field::placeholder { color: var(--text-faint); font-family: var(--font-ui); font-size: 0.9rem; letter-spacing: normal; text-transform: none; }
+
+        .telemetry { display: none; margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--border-faint); }
+        .telemetry.on { display: block; }
+        .tel-header { display: flex; justify-content: space-between; font-size: 0.85rem; font-weight: 500; margin-bottom: 12px; }
+        .tel-pct { color: var(--accent); font-weight: 600; font-family: var(--font-mono); }
+        .progress-bg { width: 100%; height: 4px; background: rgba(28, 25, 23, 0.1); border-radius: 2px; overflow: hidden; margin-bottom: 12px; }
+        .progress-bar { height: 100%; width: 0%; background: var(--text-main); transition: width 0.1s linear; }
+        .tel-stats { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-muted); }
+
+        .status-box { display: flex; align-items: flex-start; gap: 12px; margin-top: 24px; padding: 14px; background: rgba(255, 255, 255, 0.5); border-radius: 8px; font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted); }
+        .indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex-shrink: 0; margin-top: 4px; }
+        .indicator.active { background: var(--text-main); box-shadow: 0 0 0 3px rgba(28, 25, 23, 0.1); }
+        .indicator.error { background: var(--danger); box-shadow: 0 0 0 3px rgba(153, 27, 27, 0.1); }
+        #statusMsg { line-height: 1.5; word-break: break-word; }
+
+        #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--text-main); color: var(--bg-surface); padding: 10px 20px; border-radius: 8px; font-family: var(--font-ui); font-size: 0.85rem; font-weight: 500; opacity: 0; transition: all 0.2s; z-index: 100; pointer-events: none; }
+        #toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+    </style>
+</head>
+<body>
+
+    <div class="bg-canvas">
+        <div class="blob-red"></div>
+        <div class="blob-black"></div>
+    </div>
+
+    <div id="splash">
+        <div class="p2p-anim">
+            <div class="node"></div>
+            <div class="link"><div class="packet"></div></div>
+            <div class="node"></div>
+        </div>
+        <div class="splash-text" id="bootText">SYS.INIT</div>
+    </div>
+
+    <div class="container">
+        <div class="panel">
+            <div class="header">
+                <h1>VanillaWarp</h1>
+                <div class="badge">SECURE</div>
+            </div>
+
+            <div class="tabs">
+                <button class="tab on" id="tabSend" onclick="switchTab('send')">Send</button>
+                <button class="tab" id="tabRecv" onclick="switchTab('recv')">Receive</button>
+            </div>
+
+            <div class="view on" id="viewSend">
+                <div class="dropzone" id="dz" onclick="document.getElementById('fileInput').click()">
+                    <div class="dropzone-icon">📁</div>
+                    <div class="dropzone-text">Select Files</div>
+                </div>
+                <input type="file" id="fileInput" multiple onchange="handleFiles(event)">
+
+                <div class="file-list" id="stagedFiles">
+                    <div class="file-info">
+                        <div class="file-name" id="fName">--</div>
+                        <div class="file-size" id="fSize">0 B</div>
+                    </div>
+                    <button class="btn-clear" onclick="clearFiles(event)">Clear</button>
+                </div>
+
+                <div class="toggle-row" id="turboToggleRow">
+                    <div class="toggle-label">
+                        <span>Turbo Mode</span>
+                        <span class="toggle-sub">Max LAN speed (Desktop-to-Desktop)</span>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="speedToggle">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
+                <button class="btn" id="btnSend" onclick="initSender()">Start Stream</button>
+
+                <div class="code-display" id="codePanel">
+                    <div class="code-label">Room ID</div>
+                    <div class="code-val" id="roomCodeDisplay">------</div>
+                    <div class="action-row">
+                        <button class="btn-action" onclick="copyVal(activeRoomCode)">Copy ID</button>
+                        <button class="btn-action" onclick="copyVal(getLink())">Copy URL</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="view" id="viewRecv">
+                <div class="input-group">
+                    <label class="input-label">Room ID</label>
+                    <input type="text" class="input-field" id="codeInput" maxlength="10" placeholder="e.g. WDMJME" autocomplete="off" spellcheck="false" oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')">
+                </div>
+                <button class="btn" id="btnRecv" onclick="initReceiver()">Connect</button>
+            </div>
+
+            <div class="telemetry" id="telem">
+                <div class="tel-header">
+                    <span id="tState">Awaiting...</span>
+                    <span class="tel-pct" id="tPct">0%</span>
+                </div>
+                <div class="progress-bg"><div class="progress-bar" id="tBar"></div></div>
+                <div class="tel-stats">
+                    <span id="tBytes">0 / 0</span>
+                    <span id="tSpeed">0 B/s</span>
+                    <span id="tEta">ETA: --</span>
+                </div>
+            </div>
+
+            <div class="status-box">
+                <div class="indicator" id="sInd"></div>
+                <div id="statusMsg">Idle</div>
+            </div>
+        </div>
+    </div>
+    <div id="toast"></div>
+
+    <script>
+        const bootSteps = [{ t: "SYS.CRYPTO", p: 30 }, { t: "SYS.NETWORK", p: 70 }, { t: "SYS.READY", p: 100 }];
+        let bIdx = 0;
+        function runBoot() {
+            if (bIdx < bootSteps.length) {
+                document.getElementById('bootText').textContent = bootSteps[bIdx].t;
+                bIdx++; setTimeout(runBoot, 200);
+            } else { setTimeout(() => document.getElementById('splash').classList.add('gone'), 200); }
+        }
+        
+        let selectedFiles = null, activeRoomCode = null, activeTunnelUrl = null, wakeLock = null;
+        
+        const iceServers = { iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }, { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' }] };
+
+        window.onload = async () => {
+            runBoot();
+            await fetchTunnelUrl();
+            const params = new URLSearchParams(window.location.search);
+            if (params.has('room')) { switchTab('recv'); document.getElementById('codeInput').value = params.get('room').toUpperCase(); }
+            if ('Notification' in window && Notification.permission !== 'granted') Notification.requestPermission();
+        };
+
+        async function fetchTunnelUrl() {
+            try {
+                const res = await fetch('/api/tunnel-url');
+                const data = await res.json();
+                if (data.url) activeTunnelUrl = data.url;
+            } catch(e) {}
+        }
+
+        function notifyUser(title, body) {
+            if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification(title, { body: body, icon: '📁' });
+            }
+        }
+
+        async function requestWakeLock() {
+            try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } 
+            catch (err) {}
+        }
+        function releaseWakeLock() { if (wakeLock) { wakeLock.release(); wakeLock = null; } }
+
+        function switchTab(t) {
+            document.getElementById('tabSend').className = 'tab' + (t==='send'?' on':'');
+            document.getElementById('tabRecv').className = 'tab' + (t==='recv'?' on':'');
+            document.getElementById('viewSend').className = 'view' + (t==='send'?' on':'');
+            document.getElementById('viewRecv').className = 'view' + (t==='recv'?' on':'');
+        }
+
+        function showMsg(msg, state) { document.getElementById('statusMsg').textContent = msg; document.getElementById('sInd').className = 'indicator ' + (state || ''); }
+        function popToast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2000); }
+        
+        function updateTelem(pct, sent, total, spd, text) {
+            document.getElementById('telem').classList.add('on');
+            if(text) document.getElementById('tState').textContent = text;
+            document.getElementById('tPct').textContent = pct + '%';
+            document.getElementById('tBar').style.width = pct + '%';
+            document.getElementById('tBytes').textContent = fmtBytes(sent) + ' / ' + fmtBytes(total);
+            document.getElementById('tSpeed').textContent = fmtBytes(spd) + '/s';
+            
+            const rem = total - sent;
+            const etaSec = spd > 0 ? Math.round(rem / spd) : 0;
+            const etaStr = etaSec > 60 ? `${Math.floor(etaSec/60)}m ${etaSec%60}s` : `${etaSec}s`;
+            document.getElementById('tEta').textContent = `ETA: ${etaStr}`;
+        }
+
+        function fmtBytes(b) {
+            if (!b) return '0 B'; const u = ['B','KB','MB','GB','TB'];
+            const i = Math.floor(Math.log(b) / Math.log(1024));
+            return (b / Math.pow(1024, i)).toFixed(i ? 1 : 0) + ' ' + u[i];
+        }
+
+        function copyVal(v) { if(v) navigator.clipboard.writeText(v).then(() => popToast('Copied')); }
+        function getLink() { 
+            const base = activeTunnelUrl || window.location.origin + window.location.pathname;
+            return base + '?room=' + activeRoomCode; 
+        }
+
+        const dz = document.getElementById('dz');
+        dz.ondragover = e => { e.preventDefault(); dz.classList.add('over'); }; dz.ondragleave = () => dz.classList.remove('over');
+        dz.ondrop = e => { e.preventDefault(); dz.classList.remove('over'); if(e.dataTransfer.files.length) { document.getElementById('fileInput').files = e.dataTransfer.files; handleFiles({target: document.getElementById('fileInput')}); } };
+
+        function handleFiles(e) {
+            const f = e.target.files; if(!f || !f.length) return;
+            selectedFiles = Array.from(f);
+            let tot = 0; selectedFiles.forEach(x => tot += x.size);
+            document.getElementById('fName').textContent = selectedFiles.length === 1 ? selectedFiles[0].name : `${selectedFiles.length} files`;
+            document.getElementById('fSize').textContent = fmtBytes(tot);
+            document.getElementById('stagedFiles').classList.add('on');
+            document.getElementById('btnSend').disabled = false;
+            showMsg(`Staged ${selectedFiles.length} file(s).`, 'active');
+        }
+
+        function clearFiles(e) {
+            e.stopPropagation(); document.getElementById('fileInput').value = ''; selectedFiles = null;
+            document.getElementById('stagedFiles').classList.remove('on'); document.getElementById('codePanel').classList.remove('on');
+            document.getElementById('btnSend').disabled = false; showMsg('Idle', '');
+        }
+
+        function hexToBuf(h) { const a = new Uint8Array(h.length/2); for(let i=0; i<a.length; i++) a[i]=parseInt(h.substr(i*2,2),16); return a; }
+        function bufToHex(b) { return Array.from(b).map(x=>x.toString(16).padStart(2,'0')).join(''); }
+        
+        async function deriveKey(code, salt) {
+            const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(code), {name:'PBKDF2'}, false, ['deriveKey']);
+            return crypto.subtle.deriveKey({name:'PBKDF2', salt, iterations:100000, hash:'SHA-256'}, km, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']);
+        }
+        
+        async function waitForIce(pc) {
+            return new Promise(res => {
+                if(pc.iceGatheringState === 'complete') return res();
+                const to = setTimeout(() => { pc.onicegatheringstatechange=null; res(); }, 5000);
+                pc.onicegatheringstatechange = () => { if(pc.iceGatheringState === 'complete') { clearTimeout(to); pc.onicegatheringstatechange=null; res(); } };
+            });
+        }
+
+        /* SENDER LOGIC */
+        async function initSender() {
+            if(!selectedFiles) return popToast('No files staged');
+            const btnSend = document.getElementById('btnSend');
+            btnSend.disabled = true;
+
+            try {
+                showMsg('Generating room...', 'active');
+                const res = await fetch('/api/room/create', {method:'POST'});
+                if(!res.ok) throw new Error(res.status === 429 ? 'Rate limited.' : 'Server unreachable');
+                const roomData = await res.json();
+                activeRoomCode = roomData.code;
+                
+                document.getElementById('roomCodeDisplay').textContent = activeRoomCode;
+                document.getElementById('codePanel').classList.add('on');
+
+                const salt = crypto.getRandomValues(new Uint8Array(16));
+                const key = await deriveKey(activeRoomCode, salt);
+                
+                showMsg(`Awaiting connection: ${activeRoomCode}`, 'active');
+
+                const pc = new RTCPeerConnection(iceServers);
+                const dc = pc.createDataChannel('stream', { ordered: true });
+
+                let batchTot = 0;
+                selectedFiles.forEach(f => batchTot += f.size);
+
+                pc.onconnectionstatechange = () => { 
+                    if(pc.connectionState==='failed' || pc.connectionState==='disconnected') {
+                        showMsg('Connection dropped.', 'error');
+                        btnSend.disabled = false;
+                    }
+                };
+
+                dc.onopen = async () => {
+                    requestWakeLock();
+                    showMsg('Streaming data...', 'active');
+                    
+                    const isTurbo = document.getElementById('speedToggle').checked;
+                    // 250KB (Turbo) and 60KB (Normal) leaves plenty of headroom for the AES-GCM tags
+                    const currentChunkSize = isTurbo ? (250 * 1024) : (60 * 1024); 
+                    // 8MB limit safely saturates the Ethernet without crashing the browser's internal RAM buffer
+                    dc.bufferedAmountLowThreshold = isTurbo ? (8 * 1024 * 1024) : (2 * 1024 * 1024);
+                    
+                    const t0 = Date.now();
+                    let totalSent = 0;
+                    
+                    dc.send(JSON.stringify({ type: 'BATCH_START', count: selectedFiles.length, totalSize: batchTot }));
+
+                    for (let i = 0; i < selectedFiles.length; i++) {
+                        const f = selectedFiles[i];
+                        dc.send(JSON.stringify({ type: 'FILE_START', name: f.name.replace(/[/\\?%*:|"<>]/g,'_'), size: f.size }));
+
+                        let offset = 0;
+                        while(offset < f.size) {
+                            if(dc.bufferedAmount > dc.bufferedAmountLowThreshold) {
+                                await new Promise(r => dc.addEventListener('bufferedamountlow', r, {once:true}));
+                            }
+                            
+                            const chunk = await f.slice(offset, offset + currentChunkSize).arrayBuffer();
+                            const iv = crypto.getRandomValues(new Uint8Array(12));
+                            const enc = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, chunk);
+                            
+                            const payload = new Uint8Array(12 + enc.byteLength);
+                            payload.set(iv, 0); payload.set(new Uint8Array(enc), 12);
+                            dc.send(payload);
+                            
+                            offset += chunk.byteLength;
+                            totalSent += chunk.byteLength;
+                            
+                            const elap = (Date.now() - t0)/1000;
+                            const spd = elap > 0 ? totalSent/elap : 0;
+                            const pct = Math.min(100, Math.round((totalSent/batchTot)*100));
+                            updateTelem(pct, totalSent, batchTot, spd, `Tx: ${f.name}`);
+                        }
+                        dc.send('FILE_END');
+                    }
+                    dc.send('BATCH_END');
+                    showMsg('Complete', 'active');
+                    notifyUser("Transfer Complete", "Files successfully sent.");
+                    releaseWakeLock();
+                    btnSend.disabled = false;
+                };
+
+                const offer = await pc.createOffer(); 
+                await pc.setLocalDescription(offer); 
+                await waitForIce(pc);
+
+                await fetch('/api/offer?code='+activeRoomCode, {
+                    method:'POST', 
+                    headers:{'Content-Type':'application/json'}, 
+                    body: JSON.stringify({sdp:pc.localDescription, salt:bufToHex(salt)})
+                });
+
+                const poll = setInterval(async () => {
+                    try {
+                        const a = await fetch('/api/answer?code='+activeRoomCode);
+                        if(a.status === 200) { 
+                            clearInterval(poll); 
+                            const obj = await a.json(); 
+                            await pc.setRemoteDescription(new RTCSessionDescription(obj.sdp||obj)); 
+                            showMsg('Negotiating connection...', 'active'); 
+                        }
+                    } catch(err) {}
+                }, 1000);
+
+            } catch(e) { 
+                showMsg(`Error: ${e.message}`, 'error'); 
+                btnSend.disabled = false; 
+            }
+        }
+
+        /* HYBRID RECEIVER LOGIC */
+        async function initReceiver() {
+            const code = document.getElementById('codeInput').value;
+            if(code.length < 4) return popToast('Invalid Code');
+            
+            const btnRecv = document.getElementById('btnRecv');
+            btnRecv.disabled = true;
+
+            try {
+                showMsg(`Polling ${code}...`, 'active');
+                let res = await fetch('/api/offer?code='+code);
+                let attempts = 0;
+                while(res.status === 404 && attempts < 25) { 
+                    attempts++; 
+                    showMsg(`Polling (${attempts}/25)...`, 'active'); 
+                    await new Promise(r => setTimeout(r, 1500)); 
+                    res = await fetch('/api/offer?code='+code); 
+                }
+                if(res.status !== 200) throw new Error('Room expired');
+
+                const data = await res.json();
+                const key = await deriveKey(code, hexToBuf(data.salt));
+                const pc = new RTCPeerConnection(iceServers);
+                
+                let currentWriter = null;
+                let currentFileName = "";
+                let fallbackChunks = [];
+                let batchTot = 0, batchGot = 0, t0 = null, q = [], processing = false;
+
+                async function flushQueue() {
+                    if(processing) return; 
+                    processing = true;
+                    
+                    try {
+                        while(q.length > 0) {
+                            const msg = q.shift();
+                            if(typeof msg === 'string') {
+                                if(msg === 'FILE_END') { 
+                                    if(currentWriter) {
+                                        await currentWriter.close();
+                                        currentWriter = null;
+                                    }
+                                }
+                                else if(msg === 'BATCH_END') { 
+                                    showMsg('Complete', 'active'); 
+                                    popToast('Transfer Complete'); 
+                                    notifyUser("Transfer Complete", "Files saved.");
+                                    btnRecv.disabled = false; 
+                                    releaseWakeLock(); 
+                                }
+                                else {
+                                    const m = JSON.parse(msg);
+                                    if(m.type === 'BATCH_START') { 
+                                        batchTot = m.totalSize; 
+                                        t0 = Date.now(); 
+                                        requestWakeLock(); 
+                                        document.getElementById('telem').classList.add('on');
+                                    }
+                                    else if(m.type === 'FILE_START') { 
+                                        currentFileName = m.name;
+                                        showMsg(`Receiving ${currentFileName}`, 'active'); 
+                                        
+                                        if (window.showSaveFilePicker) {
+                                            const fileHandle = await window.showSaveFilePicker({ suggestedName: currentFileName });
+                                            currentWriter = await fileHandle.createWritable();
+                                        } else {
+                                            fallbackChunks = [];
+                                            currentWriter = {
+                                                write: async (chunk) => fallbackChunks.push(chunk),
+                                                close: async () => {
+                                                    const blob = new Blob(fallbackChunks);
+                                                    const url = URL.createObjectURL(blob);
+                                                    const a = document.createElement('a');
+                                                    a.href = url; a.download = currentFileName;
+                                                    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                                                    URL.revokeObjectURL(url);
+                                                    fallbackChunks = [];
+                                                }
+                                            };
+                                        }
+                                    }
+                                }
+                            } else {
+                                if(!currentWriter) continue;
+                                const buf = msg, iv = new Uint8Array(buf.slice(0, 12)), enc = buf.slice(12);
+                                try {
+                                    const dec = await crypto.subtle.decrypt({name: 'AES-GCM', iv}, key, enc);
+                                    await currentWriter.write(dec);
+                                    
+                                    batchGot += dec.byteLength;
+                                    const elap = (Date.now() - t0) / 1000;
+                                    const spd = elap > 0 ? batchGot / elap : 0;
+                                    const pct = Math.min(100, Math.round((batchGot / batchTot) * 100));
+                                    updateTelem(pct, batchGot, batchTot, spd, `Rx: ${currentFileName}`);
+                                } catch(err) { showMsg('Decryption error', 'error'); }
+                            }
+                        }
+                    } finally {
+                        processing = false;
+                    }
+                }
+
+                pc.onconnectionstatechange = () => { 
+                    if(pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                        showMsg('Connection dropped.', 'error');
+                        btnRecv.disabled = false;
+                        if(currentWriter && window.showSaveFilePicker) { currentWriter.close(); }
+                    }
+                };
+                
+                pc.ondatachannel = ev => { 
+                    const chan = ev.channel;
+                    chan.onmessage = e => { q.push(e.data); flushQueue(); }; 
+                };
+
+                await pc.setRemoteDescription(new RTCSessionDescription(data.sdp || data));
+                const ans = await pc.createAnswer(); 
+                await pc.setLocalDescription(ans); 
+                await waitForIce(pc);
+
+                await fetch('/api/answer?code=' + code, {
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({sdp: pc.localDescription})
+                });
+                
+                showMsg('Negotiating connection...', 'active');
+
+            } catch(e) { 
+                showMsg(`Error: ${e.message}`, 'error'); 
+                btnRecv.disabled = false; 
+            }
+        }
+    </script>
+</body>
+</html>
