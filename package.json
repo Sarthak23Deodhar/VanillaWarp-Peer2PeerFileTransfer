@@ -1,0 +1,12 @@
+{
+  "name": "vanillawarp",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/folder-transfer.test.cjs tests/server.test.cjs",
+    "test:browser": "node --test tests/browser.test.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}

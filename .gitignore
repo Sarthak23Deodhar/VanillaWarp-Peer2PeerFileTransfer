@@ -1,0 +1,7 @@
+# Build and runtime output
+/out/
+/node_modules/
+*.db
+*.db-shm
+*.db-wal
+/sqlite-jdbc.jar

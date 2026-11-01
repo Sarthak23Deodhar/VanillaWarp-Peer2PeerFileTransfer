@@ -1,0 +1,30 @@
+name: Test
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: mkdir -p out/vanillawarp && javac -d out/vanillawarp src/com/transfer/network/WebRelayServer.java src/com/transfer/gui/P2PApplicationGUI.java
+      - run: npm test
+        env:
+          VANILLAWARP_TEST_CLASSPATH: out/vanillawarp
+      - run: npx playwright install --with-deps chromium
+      - name: Browser-to-browser WebRTC tests
+        run: |
+          java -cp out/vanillawarp WebRelayServer > /tmp/vanillawarp.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" || true' EXIT
+          for i in {1..50}; do curl -fsS http://127.0.0.1:8080/ >/dev/null && break || sleep .2; done
+          npm run test:browser
+        env:
+          VANILLAWARP_BROWSER_URL: http://127.0.0.1:8080/
