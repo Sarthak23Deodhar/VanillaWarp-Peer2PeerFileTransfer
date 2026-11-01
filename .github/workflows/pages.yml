@@ -1,0 +1,45 @@
+name: Publish VanillaWarp
+on:
+  workflow_dispatch:
+    inputs:
+      tunnel_url:
+        description: Current public HTTPS tunnel URL (no secrets)
+        required: true
+        type: string
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare website and validate public tunnel address
+        env:
+          TUNNEL_URL: ${{ inputs.tunnel_url }}
+        run: |
+          mkdir -p site
+          cp resources/index.html resources/app.js resources/styles.css site/
+          python3 - <<'PY'
+          import json, os, re
+          from urllib.parse import urlsplit
+          raw = os.environ['TUNNEL_URL']
+          u = urlsplit(raw)
+          if u.scheme != 'https' or not u.hostname or not re.fullmatch(r'[a-zA-Z0-9.-]+\.(?:lhr\.life|localhost\.run)', u.hostname) or u.username or u.password or u.port or u.path not in ('', '/') or u.query or u.fragment:
+              raise SystemExit('Invalid public tunnel URL')
+          with open('site/server-config.json', 'w', encoding='utf-8') as f:
+              json.dump({'serverUrl': 'https://' + u.hostname}, f, separators=(',', ':'))
+          PY
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

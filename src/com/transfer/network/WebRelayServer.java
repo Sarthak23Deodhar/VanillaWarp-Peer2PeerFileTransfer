@@ -1,377 +1,255 @@
-/*
- * VanillaWarp Signaling & Relay Server - Enterprise Edition
- * 
- * Features:
- * - WebRTC SDP Signaling (Polling & SSE support)
- * - Persistent localhost.run SSH Tunneling with Auto-Restart
- * - SQLite Telemetry Engine (JDBC)
- * - Live TCP Socket Admin Console (Port 8081)
- * - Token Bucket IP Rate Limiting
- */
-
+/* VanillaWarp signaling server. File contents travel over WebRTC, never this server. */
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
-
 import java.io.*;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
+import java.net.*;
+import java.net.http.*;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.Statement;
-import java.util.Random;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.nio.file.*;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class WebRelayServer {
+    private static final int PORT = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
+    private static final String PAGES_ORIGIN = System.getenv().getOrDefault("VANILLAWARP_PAGES_ORIGIN", "");
+    private static final String TURN_URL = System.getenv().getOrDefault("VANILLAWARP_TURN_API_URL", "");
+    private static final SecureRandom RANDOM = new SecureRandom();
+    private static final Map<String, RoomState> rooms = new ConcurrentHashMap<>();
+    private static final Map<String, AtomicInteger> roomRequests = new ConcurrentHashMap<>();
+    private static final Map<String, AtomicInteger> signalRequests = new ConcurrentHashMap<>();
+    private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).followRedirects(HttpClient.Redirect.NEVER).build();
+    private static volatile String tunnelUrl;
+    private static volatile Process tunnelProcess;
+    private static final Object PUBLISH_LOCK = new Object();
+    private static volatile boolean published;
+    private static final int MAX_BODY = 262144;
+    private static final long ROOM_LIFETIME = 10 * 60 * 1000L;
+    private static final String STUN = "{\"iceServers\":[{\"urls\":\"stun:stun.cloudflare.com:3478\"}],\"relay\":false}";
 
-    private static final int PORT = 8080;
-    private static final int ADMIN_PORT = 8081;
-    private static String activeTunnelUrl = null;
-    
-    // In-memory data stores
-    private static final ConcurrentHashMap<String, RoomState> rooms = new ConcurrentHashMap<>();
-    private static final ConcurrentHashMap<String, Integer> requestCounts = new ConcurrentHashMap<>();
-    
-    static class RoomState {
-        String offerPayload = null;
-        String answerPayload = null;
-        long timestamp = System.currentTimeMillis();
+    private static final class RoomState {
+        final String ownerToken;
+        final long createdAt = System.currentTimeMillis();
+        String offer, answer, joinToken;
+        int ownerIce, joinIce;
+        RoomState(String token) { ownerToken = token; }
     }
 
     public static void main(String[] args) throws IOException {
-        // Initialize embedded SQLite Database
-        initDatabase();
-
-        // Initialize HTTP Server
         HttpServer server = HttpServer.create(new InetSocketAddress(PORT), 0);
-
-        // Core Endpoints
-        server.createContext("/", new StaticFileHandler());
-        server.createContext("/api/tunnel-url", new TunnelUrlHandler());
-        server.createContext("/api/room/create", new CreateRoomHandler());
-        server.createContext("/api/offer", new OfferHandler());
-        server.createContext("/api/answer", new AnswerHandler());
-
-        server.setExecutor(Executors.newCachedThreadPool());
+        server.createContext("/", WebRelayServer::staticFile);
+        server.createContext("/api/status", api(exchange -> {
+            if (!method(exchange, "GET")) return;
+            json(exchange, 200, "{\"online\":true,\"relayConfigured\":" + !TURN_URL.isBlank() + ",\"published\":" + published + "}");
+        }));
+        server.createContext("/api/room/create", api(WebRelayServer::createRoom));
+        server.createContext("/api/room/join", api(WebRelayServer::joinRoom));
+        server.createContext("/api/room/cancel", api(WebRelayServer::cancelRoom));
+        server.createContext("/api/offer", api(exchange -> signaling(exchange, true)));
+        server.createContext("/api/answer", api(exchange -> signaling(exchange, false)));
+        server.createContext("/api/ice", api(WebRelayServer::iceServers));
+        server.setExecutor(Executors.newFixedThreadPool(16));
         server.start();
-        System.out.println("VanillaWarp Server initialized on port " + PORT);
-        
-        // Start Background Daemons
-        startRoomCleanupDaemon();
-        startTunnelDaemon();
-        startAdminConsole();
-    }
-
-    // --------------------------------------------------------
-    // Enterprise Daemons & Subsystems
-    // --------------------------------------------------------
-
-    private static void initDatabase() {
-        String url = "jdbc:sqlite:vanillawarp.db";
-        try (Connection conn = DriverManager.getConnection(url);
-             Statement stmt = conn.createStatement()) {
-            
-            String sql = "CREATE TABLE IF NOT EXISTS transfers (\n"
-                    + " id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
-                    + " room_code TEXT NOT NULL,\n"
-                    + " client_ip TEXT NOT NULL,\n"
-                    + " created_at DATETIME DEFAULT CURRENT_TIMESTAMP,\n"
-                    + " status TEXT NOT NULL\n"
-                    + ");";
-            stmt.execute(sql);
-            System.out.println("Telemetry database initialized.");
-        } catch (Exception e) {
-            System.err.println("Database initialization failed: " + e.getMessage());
+        System.out.println("VanillaWarp listening on http://localhost:" + PORT);
+        if (TURN_URL.isBlank()) System.out.println("Free relay not configured: direct connections only. See README.");
+        Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(() -> {
+            long now = System.currentTimeMillis();
+            rooms.entrySet().removeIf(e -> now - e.getValue().createdAt > ROOM_LIFETIME);
+            roomRequests.clear(); signalRequests.clear();
+        }, 1, 1, TimeUnit.MINUTES);
+        if ("1".equals(System.getenv("VANILLAWARP_TUNNEL"))) startTunnel();
+        if ("1".equals(System.getenv("VANILLAWARP_OPEN_BROWSER"))) {
+            try {
+                if (java.awt.Desktop.isDesktopSupported() && java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.BROWSE))
+                    java.awt.Desktop.getDesktop().browse(URI.create("http://localhost:" + PORT + "/"));
+            } catch (Exception ignored) { System.out.println("Open http://localhost:" + PORT + "/ in your browser."); }
         }
     }
 
-    public static void logRoomCreation(String roomCode, String clientIp) {
-        String url = "jdbc:sqlite:vanillawarp.db";
-        String sql = "INSERT INTO transfers(room_code, client_ip, status) VALUES(?, ?, ?)";
-        try (Connection conn = DriverManager.getConnection(url);
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setString(1, roomCode);
-            pstmt.setString(2, clientIp);
-            pstmt.setString(3, "CREATED");
-            pstmt.executeUpdate();
-        } catch (Exception e) {
-            System.err.println("Failed to log telemetry: " + e.getMessage());
-        }
-    }
-
-    private static void startAdminConsole() {
-        Thread adminThread = new Thread(() -> {
-            try (ServerSocket serverSocket = new ServerSocket(ADMIN_PORT)) {
-                System.out.println("Live Admin Console listening on port " + ADMIN_PORT);
-                while (true) {
-                    Socket clientSocket = serverSocket.accept();
-                    new Thread(() -> handleAdminClient(clientSocket)).start();
-                }
-            } catch (IOException e) {
-                System.err.println("Admin console error: " + e.getMessage());
+    private static HttpHandler api(HttpHandler next) {
+        return exchange -> {
+            String origin = exchange.getRequestHeaders().getFirst("Origin");
+            if (!PAGES_ORIGIN.isBlank() && PAGES_ORIGIN.equals(origin)) {
+                exchange.getResponseHeaders().set("Access-Control-Allow-Origin", PAGES_ORIGIN);
+                exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type, X-Owner-Token, X-Join-Token");
+                exchange.getResponseHeaders().set("Access-Control-Max-Age", "600");
+                exchange.getResponseHeaders().add("Vary", "Origin");
             }
-        });
-        adminThread.setDaemon(true);
-        adminThread.start();
+            if ("OPTIONS".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(PAGES_ORIGIN.equals(origin) && !PAGES_ORIGIN.isBlank() ? 204 : 403, -1); exchange.close(); return;
+            }
+            next.handle(exchange);
+        };
     }
 
-    private static void handleAdminClient(Socket clientSocket) {
-        try (
-            BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-            PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true)
-        ) {
-            out.println("====================================");
-            out.println(" VanillaWarp Admin Console v1.0");
-            out.println("====================================");
-            out.println("Commands: STATUS, KILL [room], EXIT");
-            out.print("admin@vanillawarp:~$ ");
-            out.flush();
-            
-            String line;
-            while ((line = in.readLine()) != null) {
-                String[] args = line.trim().toUpperCase().split(" ");
-                if (args[0].equals("STATUS")) {
-                    out.println("Active Rooms: " + rooms.size());
-                    out.println("Tunnel URL: " + (activeTunnelUrl != null ? activeTunnelUrl : "Offline"));
-                } else if (args[0].equals("KILL") && args.length == 2) {
-                    if (rooms.remove(args[1]) != null) out.println("Room " + args[1] + " terminated.");
-                    else out.println("Room not found.");
-                } else if (args[0].equals("EXIT")) {
-                    break;
-                } else {
-                    out.println("Unknown command.");
-                }
-                out.print("admin@vanillawarp:~$ ");
-                out.flush();
-            }
-        } catch (IOException e) {
-            System.err.println("Admin client disconnected.");
+    private static void staticFile(HttpExchange e) throws IOException {
+        if (!method(e, "GET")) return;
+        String path = e.getRequestURI().getPath();
+        String name = switch (path) {
+            case "/", "/index.html" -> "index.html";
+            case "/app.js" -> "app.js";
+            case "/styles.css" -> "styles.css";
+            default -> null;
+        };
+        if (name == null) { text(e, 404, "Not found"); return; }
+        Path file = Paths.get("resources", name);
+        if (!Files.isRegularFile(file)) { text(e, 404, "App files not found; start from the project root"); return; }
+        byte[] bytes = Files.readAllBytes(file);
+        e.getResponseHeaders().set("Content-Type", name.endsWith(".js") ? "application/javascript; charset=UTF-8" : name.endsWith(".css") ? "text/css; charset=UTF-8" : "text/html; charset=UTF-8");
+        e.getResponseHeaders().set("Cache-Control", "no-store");
+        e.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+        e.getResponseHeaders().set("Referrer-Policy", "no-referrer");
+        e.getResponseHeaders().set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; base-uri 'none'");
+        e.sendResponseHeaders(200, bytes.length);
+        try (OutputStream out = e.getResponseBody()) { out.write(bytes); }
+    }
+
+    private static void createRoom(HttpExchange e) throws IOException {
+        if (!method(e, "POST")) return;
+        if (!allow(roomRequests, e, 10)) { json(e, 429, "{\"error\":\"Too many rooms; retry later\"}"); return; }
+        String code, owner = token(); RoomState room = new RoomState(owner);
+        do { code = randomCode(); } while (rooms.putIfAbsent(code, room) != null);
+        json(e, 200, "{\"code\":\"" + code + "\",\"ownerToken\":\"" + owner + "\"}");
+    }
+    private static void joinRoom(HttpExchange e) throws IOException {
+        if (!method(e, "POST")) return;
+        if (!allow(signalRequests, e, 600)) { json(e, 429, "{\"error\":\"Too many requests\"}"); return; }
+        RoomState room = room(e);
+        if (room == null) { json(e, 404, "{\"error\":\"Room not found or expired\"}"); return; }
+        synchronized (room) {
+            if (room.offer == null) { json(e, 404, "{\"error\":\"Room not ready\"}"); return; }
+            if (room.joinToken != null) { json(e, 409, "{\"error\":\"Room already has a request\"}"); return; }
+            room.joinToken = token();
+            json(e, 200, "{\"joinToken\":\"" + room.joinToken + "\"}");
         }
     }
+    private static void cancelRoom(HttpExchange e) throws IOException {
+        if (!method(e, "POST")) return;
+        String code = getCode(e.getRequestURI().getRawQuery()); RoomState room = code == null ? null : rooms.get(code);
+        if (room == null) { json(e, 404, "{\"error\":\"Room not found\"}"); return; }
+        String owner = e.getRequestHeaders().getFirst("X-Owner-Token"), joiner = e.getRequestHeaders().getFirst("X-Join-Token");
+        synchronized (room) {
+            if (!equalToken(room.ownerToken, owner) && !equalToken(room.joinToken, joiner)) { json(e, 403, "{\"error\":\"Invalid token\"}"); return; }
+            rooms.remove(code, room);
+        }
+        json(e, 200, "{\"status\":\"closed\"}");
+    }
+    private static void signaling(HttpExchange e, boolean offer) throws IOException {
+        if (!allow(signalRequests, e, 600)) { json(e, 429, "{\"error\":\"Too many requests\"}"); return; }
+        RoomState room = room(e);
+        if (room == null) { json(e, 410, "{\"error\":\"Room not found or expired\"}"); return; }
+        if ("GET".equals(e.getRequestMethod())) {
+            if (!offer && !equalToken(room.ownerToken, e.getRequestHeaders().getFirst("X-Owner-Token"))) { json(e, 403, "{\"error\":\"Invalid token\"}"); return; }
+            String payload; synchronized (room) { payload = offer ? room.offer : room.answer; }
+            if (payload == null) json(e, 404, "{\"error\":\"Not ready\"}"); else json(e, 200, payload);
+        } else if ("POST".equals(e.getRequestMethod())) {
+            String supplied = e.getRequestHeaders().getFirst(offer ? "X-Owner-Token" : "X-Join-Token");
+            String body;
+            try { body = readBody(e); } catch (IOException ex) { json(e, 413, "{\"error\":\"Request too large\"}"); return; }
+            synchronized (room) {
+                if (!equalToken(offer ? room.ownerToken : room.joinToken, supplied)) { json(e, 403, "{\"error\":\"Invalid token\"}"); return; }
+                if ((offer ? room.offer : room.answer) != null) { json(e, 409, "{\"error\":\"Already set\"}"); return; }
+                if (offer) room.offer = body; else room.answer = body;
+            }
+            json(e, 200, "{\"status\":\"saved\"}");
+        } else { e.sendResponseHeaders(405, -1); e.close(); }
+    }
+    private static void iceServers(HttpExchange e) throws IOException {
+        if (!method(e, "GET")) return;
+        if (!allow(signalRequests, e, 600)) { json(e, 429, "{\"error\":\"Too many requests\"}"); return; }
+        RoomState room = room(e);
+        if (room == null) { json(e, 404, "{\"error\":\"Room not found or expired\"}"); return; }
+        boolean owner = equalToken(room.ownerToken, e.getRequestHeaders().getFirst("X-Owner-Token"));
+        boolean joiner; synchronized (room) { joiner = equalToken(room.joinToken, e.getRequestHeaders().getFirst("X-Join-Token")); }
+        if (!owner && !joiner) { json(e, 403, "{\"error\":\"Invalid token\"}"); return; }
+        synchronized (room) {
+            if (owner ? ++room.ownerIce > 2 : ++room.joinIce > 2) { json(e, 429, "{\"error\":\"Credential request limit reached\"}"); return; }
+        }
+        if (TURN_URL.isBlank()) { json(e, 200, STUN); return; }
+        try {
+            URI uri = URI.create(TURN_URL);
+            String host = uri.getHost();
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || host == null || !host.toLowerCase(Locale.ROOT).endsWith(".metered.live") || uri.getUserInfo() != null || uri.getPort() != -1 || !"/api/v1/turn/credentials".equals(uri.getPath())) throw new IllegalArgumentException();
+            HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(8)).GET().build();
+            HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            String body = response.body().trim();
+            if (response.statusCode() != 200 || body.length() > 32000 || !body.startsWith("[") || !body.endsWith("]")) throw new IOException();
+            json(e, 200, "{\"iceServers\":" + body + ",\"relay\":true}");
+        } catch (Exception ex) {
+            System.err.println("Free relay unavailable; using direct connections only.");
+            json(e, 200, STUN);
+        }
+    }
+    private static RoomState room(HttpExchange e) {
+        String code = getCode(e.getRequestURI().getRawQuery()); RoomState r = code == null ? null : rooms.get(code);
+        return r == null || System.currentTimeMillis() - r.createdAt > ROOM_LIFETIME ? null : r;
+    }
+    private static boolean equalToken(String expected, String actual) { return expected != null && actual != null && MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8), actual.getBytes(StandardCharsets.UTF_8)); }
+    private static boolean allow(Map<String, AtomicInteger> counts, HttpExchange e, int limit) { return counts.computeIfAbsent(e.getRemoteAddress().getAddress().getHostAddress(), k -> new AtomicInteger()).incrementAndGet() <= limit; }
+    private static String token() { byte[] bytes = new byte[24]; RANDOM.nextBytes(bytes); return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes); }
+    private static String randomCode() { String chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; StringBuilder out = new StringBuilder(); for (int i=0; i<8; i++) out.append(chars.charAt(RANDOM.nextInt(chars.length()))); return out.toString(); }
+    private static String getCode(String query) { if (query == null) return null; for (String part : query.split("&")) if (part.matches("code=[A-Z2-9]{8}")) return part.substring(5); return null; }
+    private static boolean method(HttpExchange e, String expected) throws IOException { if (expected.equals(e.getRequestMethod())) return true; e.sendResponseHeaders(405, -1); e.close(); return false; }
+    private static String readBody(HttpExchange e) throws IOException {
+        try (InputStream in = e.getRequestBody(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] b = new byte[4096]; int n, total = 0; while ((n = in.read(b)) != -1) { total += n; if (total > MAX_BODY) throw new IOException("too large"); out.write(b, 0, n); } return out.toString(StandardCharsets.UTF_8);
+        }
+    }
+    private static void json(HttpExchange e, int status, String body) throws IOException { e.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8"); e.getResponseHeaders().set("Cache-Control", "no-store"); send(e, status, body); }
+    private static void text(HttpExchange e, int status, String body) throws IOException { e.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8"); send(e, status, body); }
+    private static void send(HttpExchange e, int status, String body) throws IOException { byte[] bytes = body.getBytes(StandardCharsets.UTF_8); e.sendResponseHeaders(status, bytes.length); try (OutputStream out = e.getResponseBody()) { out.write(bytes); } }
 
-    private static void startTunnelDaemon() {
-        Thread tunnelThread = new Thread(() -> {
-            while (true) {
+    private static void startTunnel() {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> { Process p = tunnelProcess; if (p != null) p.destroyForcibly(); }, "stop-tunnel"));
+        Thread thread = new Thread(() -> {
+            while (!Thread.currentThread().isInterrupted()) {
                 try {
-                    System.out.println("Starting resilient localhost.run tunnel...");
-                    ProcessBuilder pb = new ProcessBuilder(
-                        "ssh", "-R", "80:localhost:" + PORT, 
-                        "-o", "ServerAliveInterval=60", 
-                        "-o", "ServerAliveCountMax=3", 
-                        "-o", "StrictHostKeyChecking=no",
-                        "nokey@localhost.run"
-                    );
-                    
-                    pb.redirectErrorStream(true);
-                    Process process = pb.start();
-
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        if (line.contains(".lhr.life")) {
-                            String[] parts = line.split(" ");
-                            for (String part : parts) {
-                                if (part.contains(".lhr.life")) {
-                                    activeTunnelUrl = "https://" + part.trim();
-                                    System.out.println("Tunnel Active: " + activeTunnelUrl);
-                                }
+                    Process p = new ProcessBuilder("ssh", "-R", "80:localhost:" + PORT, "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3", "-o", "StrictHostKeyChecking=accept-new", "nokey@localhost.run").redirectErrorStream(true).start();
+                    tunnelProcess = p;
+                    try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                        String line; while ((line = r.readLine()) != null) {
+                            System.out.println(line);
+                            java.util.regex.Matcher m = java.util.regex.Pattern.compile("https://[A-Za-z0-9.-]+\\.(?:lhr\\.life|localhost\\.run)").matcher(line);
+                            if (m.find() && !m.group().equals(tunnelUrl)) {
+                                tunnelUrl = m.group(); published = false;
+                                System.out.println("Tunnel connected: " + tunnelUrl);
+                                if ("1".equals(System.getenv("VANILLAWARP_PUBLISH_PAGES"))) publishPages(tunnelUrl);
                             }
                         }
                     }
-                    
-                    process.waitFor();
-                    System.out.println("Tunnel connection lost. Restarting in 3 seconds...");
-                    activeTunnelUrl = null;
-                    Thread.sleep(3000); 
-                    
-                } catch (Exception e) {
-                    System.err.println("Tunnel daemon error: " + e.getMessage());
-                    try { Thread.sleep(5000); } catch (InterruptedException ie) {}
+                    p.waitFor(); tunnelProcess = null; tunnelUrl = null; published = false; System.out.println("Tunnel disconnected. Reconnecting..."); Thread.sleep(3000);
+                } catch (Exception ex) { tunnelUrl = null; published = false; System.err.println("Tunnel unavailable. Check SSH and your network."); try { Thread.sleep(5000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); } }
+            }
+        }, "tunnel"); thread.setDaemon(true); thread.start();
+    }
+    private static void publishPages(String url) {
+        Thread thread = new Thread(() -> {
+            String repo = System.getenv("VANILLAWARP_GH_REPO"), ref = System.getenv("VANILLAWARP_GH_REF"), pages = System.getenv("VANILLAWARP_PAGES_URL");
+            if (repo == null || ref == null || pages == null) { System.err.println("Pages settings missing. Run through run.bat."); return; }
+            try {
+                System.out.println("Publishing the tunnel address to GitHub Pages...");
+                synchronized (PUBLISH_LOCK) {
+                    if (!url.equals(tunnelUrl)) return;
+                    Process process = new ProcessBuilder("gh", "workflow", "run", "pages.yml", "--repo", repo, "--ref", ref, "-f", "tunnel_url=" + url).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+                    boolean finished = process.waitFor(60, TimeUnit.SECONDS);
+                    if (!finished) process.destroyForcibly();
+                    if (!finished || process.exitValue() != 0) { System.err.println("Pages publish failed. Check GitHub CLI sign-in, Pages settings and workflow on the default branch."); return; }
                 }
-            }
-        });
-        tunnelThread.setDaemon(true);
-        tunnelThread.start();
-    }
-
-    private static void startRoomCleanupDaemon() {
-        Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(() -> {
-            // Clear expired rooms
-            long now = System.currentTimeMillis();
-            rooms.entrySet().removeIf(entry -> (now - entry.getValue().timestamp) > 3600000); // 1 Hour limit
-            
-            // Flush rate limit tokens
-            requestCounts.clear();
-        }, 1, 1, TimeUnit.MINUTES);
-    }
-
-    // --------------------------------------------------------
-    // HTTP Handlers (WebRTC Signaling)
-    // --------------------------------------------------------
-
-    static class StaticFileHandler implements HttpHandler {
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            if ("GET".equals(exchange.getRequestMethod())) {
-                File file = new File("index.html");
-                if (file.exists()) {
-                    byte[] bytes = Files.readAllBytes(file.toPath());
-                    exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
-                    exchange.sendResponseHeaders(200, bytes.length);
-                    OutputStream os = exchange.getResponseBody();
-                    os.write(bytes);
-                    os.close();
-                } else {
-                    String response = "404 - index.html not found";
-                    exchange.sendResponseHeaders(404, response.length());
-                    OutputStream os = exchange.getResponseBody();
-                    os.write(response.getBytes());
-                    os.close();
+                for (int i=0; i<60 && url.equals(tunnelUrl); i++) {
+                    try {
+                        URI config = URI.create(pages.replaceAll("/+$", "") + "/server-config.json?check=" + System.currentTimeMillis());
+                        HttpResponse<String> response = HTTP.send(HttpRequest.newBuilder(config).timeout(Duration.ofSeconds(8)).GET().build(), HttpResponse.BodyHandlers.ofString());
+                        if (url.equals(tunnelUrl) && response.statusCode() == 200 && response.body().contains("\"serverUrl\":\"" + url + "\"")) { published = true; System.out.println("Ready: " + pages); return; }
+                    } catch (Exception ignored) {}
+                    Thread.sleep(5000);
                 }
-            }
-        }
-    }
-
-    static class TunnelUrlHandler implements HttpHandler {
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            String jsonResponse = "{}";
-            if (activeTunnelUrl != null) {
-                jsonResponse = "{\"url\":\"" + activeTunnelUrl + "\"}";
-            }
-            sendJsonResponse(exchange, 200, jsonResponse);
-        }
-    }
-
-    static class CreateRoomHandler implements HttpHandler {
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            if ("POST".equals(exchange.getRequestMethod())) {
-                
-                // IP Rate Limiting (Token Bucket approach)
-                String clientIp = exchange.getRemoteAddress().getAddress().getHostAddress();
-                int requests = requestCounts.getOrDefault(clientIp, 0);
-                
-                if (requests >= 5) {
-                    sendJsonResponse(exchange, 429, "{\"error\":\"Rate limit exceeded. Try again in 1 minute.\"}");
-                    return;
-                }
-                requestCounts.put(clientIp, requests + 1);
-
-                // Generate and track room
-                String code = generateCode(6);
-                rooms.put(code, new RoomState());
-                logRoomCreation(code, clientIp); // SQLite Telemetry insertion
-                
-                String jsonResponse = "{\"code\":\"" + code + "\"}";
-                sendJsonResponse(exchange, 200, jsonResponse);
-            } else {
-                exchange.sendResponseHeaders(405, -1);
-            }
-        }
-
-        private String generateCode(int length) {
-            String chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-            StringBuilder sb = new StringBuilder();
-            Random rnd = new Random();
-            while (sb.length() < length) { 
-                sb.append(chars.charAt((int) (rnd.nextFloat() * chars.length())));
-            }
-            return sb.toString();
-        }
-    }
-
-    static class OfferHandler implements HttpHandler {
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            String code = extractCode(exchange.getRequestURI().getQuery());
-            if (code == null || !rooms.containsKey(code)) {
-                sendJsonResponse(exchange, 404, "{\"error\":\"Room not found\"}");
-                return;
-            }
-
-            RoomState room = rooms.get(code);
-
-            if ("POST".equals(exchange.getRequestMethod())) {
-                String payload = readRequestBody(exchange);
-                room.offerPayload = payload;
-                sendJsonResponse(exchange, 200, "{\"status\":\"Offer saved\"}");
-            } else if ("GET".equals(exchange.getRequestMethod())) {
-                if (room.offerPayload != null) {
-                    sendJsonResponse(exchange, 200, room.offerPayload);
-                } else {
-                    sendJsonResponse(exchange, 404, "{\"error\":\"Offer not ready\"}");
-                }
-            }
-        }
-    }
-
-    static class AnswerHandler implements HttpHandler {
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            String code = extractCode(exchange.getRequestURI().getQuery());
-            if (code == null || !rooms.containsKey(code)) {
-                sendJsonResponse(exchange, 404, "{\"error\":\"Room not found\"}");
-                return;
-            }
-
-            RoomState room = rooms.get(code);
-
-            if ("POST".equals(exchange.getRequestMethod())) {
-                String payload = readRequestBody(exchange);
-                room.answerPayload = payload;
-                sendJsonResponse(exchange, 200, "{\"status\":\"Answer saved\"}");
-            } else if ("GET".equals(exchange.getRequestMethod())) {
-                if (room.answerPayload != null) {
-                    sendJsonResponse(exchange, 200, room.answerPayload);
-                } else {
-                    sendJsonResponse(exchange, 404, "{\"error\":\"Answer not ready\"}");
-                }
-            }
-        }
-    }
-
-    // --------------------------------------------------------
-    // Utility Methods
-    // --------------------------------------------------------
-
-    private static String extractCode(String query) {
-        if (query == null) return null;
-        for (String param : query.split("&")) {
-            String[] pair = param.split("=");
-            if (pair.length > 1 && "code".equals(pair[0])) {
-                return pair[1].toUpperCase();
-            }
-        }
-        return null;
-    }
-
-    private static String readRequestBody(HttpExchange exchange) throws IOException {
-        InputStream is = exchange.getRequestBody();
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        int nRead;
-        byte[] data = new byte[1024];
-        while ((nRead = is.read(data, 0, data.length)) != -1) {
-            buffer.write(data, 0, nRead);
-        }
-        buffer.flush();
-        return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
-    }
-
-    private static void sendJsonResponse(HttpExchange exchange, int statusCode, String response) throws IOException {
-        exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
-        exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
-        
-        byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
-        exchange.sendResponseHeaders(statusCode, bytes.length);
-        OutputStream os = exchange.getResponseBody();
-        os.write(bytes);
-        os.close();
+                if (url.equals(tunnelUrl)) System.err.println("Pages is not ready yet. Check the Pages workflow run in GitHub.");
+            } catch (Exception ex) { System.err.println("Could not start the Pages workflow. Check GitHub CLI and repository setup."); }
+        }, "pages-publish"); thread.setDaemon(true); thread.start();
     }
 }

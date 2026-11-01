@@ -1,0 +1,38 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const {spawn} = require('node:child_process');
+const net = require('node:net');
+const cp=process.env.VANILLAWARP_TEST_CLASSPATH;
+test('server room tokens, one joiner, CORS, ICE, and cancellation', {skip:!cp,timeout:20000}, async t=>{
+  const probe=net.createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
+  const proc=spawn(process.env.JAVA||'java',['-cp',cp,'WebRelayServer'],{cwd:process.cwd(),env:{...process.env,PORT:String(port),VANILLAWARP_TUNNEL:'0',VANILLAWARP_TURN_API_URL:'',VANILLAWARP_PAGES_ORIGIN:'https://owner.github.io'},stdio:'ignore'});t.after(()=>proc.kill());
+  const base=`http://127.0.0.1:${port}`;let initial;
+  for(let i=0;i<100;i++){try{initial=await fetch(base+'/');break;}catch(_){await new Promise(r=>setTimeout(r,50));}}
+  assert.ok(initial);assert.match(await initial.text(),/VanillaWarp/);assert.match(initial.headers.get('content-security-policy'),/default-src 'self'/);
+  assert.equal((await fetch(base+'/qrcode.js')).status,404);
+  const options=origin=>fetch(base+'/api/offer',{method:'OPTIONS',headers:{Origin:origin,'Access-Control-Request-Method':'GET'}});
+  assert.equal((await options('https://evil.example')).status,403);
+  const pre=await options('https://owner.github.io');assert.equal(pre.status,204);assert.equal(pre.headers.get('access-control-allow-origin'),'https://owner.github.io');
+  const post=(path,headers={},body='{}')=>fetch(base+path,{method:'POST',headers,body});
+  const room=await (await post('/api/room/create')).json();assert.match(room.code,/^[ABCDEFGHJKLMNPQRSTUVWXYZ2-9]{8}$/);assert.match(room.ownerToken,/^[\w-]{32}$/);
+  const query='?code='+room.code, owner={'X-Owner-Token':room.ownerToken};
+  assert.equal((await post('/api/room/join'+query)).status,404);
+  assert.equal((await post('/api/offer'+query)).status,403);
+  assert.equal((await post('/api/offer'+query,owner,'x'.repeat(262145))).status,413);
+  assert.equal((await post('/api/offer'+query,owner,'{"version":3}')).status,200);
+  assert.equal((await post('/api/offer'+query,owner)).status,409);
+  assert.deepEqual(await (await fetch(base+'/api/offer'+query)).json(),{version:3});
+  const joined=await (await post('/api/room/join'+query)).json();assert.match(joined.joinToken,/^[\w-]{32}$/);
+  assert.equal((await post('/api/room/join'+query)).status,409);
+  assert.equal((await fetch(base+'/api/answer'+query)).status,403);
+  assert.equal((await fetch(base+'/api/answer'+query,{headers:owner})).status,404);
+  assert.equal((await post('/api/answer'+query,{'X-Join-Token':'wrong'})).status,403);
+  assert.equal((await post('/api/answer'+query,{'X-Join-Token':joined.joinToken},'{"answer":1}')).status,200);
+  assert.deepEqual(await (await fetch(base+'/api/answer'+query,{headers:owner})).json(),{answer:1});
+  assert.equal((await fetch(base+'/api/ice'+query)).status,403);
+  const ice=await (await fetch(base+'/api/ice'+query,{headers:owner})).json();assert.equal(ice.relay,false);assert.ok(ice.iceServers.length);
+  assert.equal((await post('/api/room/cancel'+query,{'X-Join-Token':joined.joinToken})).status,200);
+  assert.equal((await fetch(base+'/api/answer'+query,{headers:owner})).status,410);
+  for(let i=0;i<9;i++)assert.equal((await post('/api/room/create')).status,200);
+  assert.equal((await post('/api/room/create')).status,429);
+});
