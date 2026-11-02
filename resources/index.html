@@ -5,9 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f6f7f3">
   <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self' https://*.lhr.life https://*.localhost.run; base-uri 'none'; object-src 'none'; form-action 'none'">
   <title>VanillaWarp — Send anything, anywhere</title>
   <link rel="stylesheet" href="styles.css">
-  <script src="app.js" defer></script>
+  <script src="hash.js?v=1" defer></script>
+  <script src="app.js?v=9" defer></script>
 </head>
 <body>
   <svg class="svg-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -23,20 +25,27 @@
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
     <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></symbol>
   </svg>
+  <div id="splash" class="splash" aria-hidden="true">
+    <div class="splash-content">
+      <div class="splash-mark"><svg viewBox="0 0 28 28"><path d="M4 9.5h11.5l-4-4M24 18.5H12.5l4 4M15.5 9.5l-4 4m1 5 4-4"/></svg></div>
+      <div class="splash-name">vanilla<span>warp</span><b>.</b></div>
+      <p>A simpler way to share.</p><span class="splash-line"></span>
+    </div>
+  </div>
   <div class="page-shell">
     <header class="topbar wrap">
       <button class="brand" id="homeBrand" aria-label="VanillaWarp home">
         <span class="brand-mark"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M4 9.5h11.5l-4-4M24 18.5H12.5l4 4M15.5 9.5l-4 4m1 5 4-4"/></svg></span>
         <span>vanilla<span class="brand-accent">warp</span><span class="brand-dot">.</span></span>
       </button>
-      <div class="top-actions"><span id="connectionStatus" class="service-status" role="status"><span class="status-dot"></span><span id="connectionLabel">Checking server</span></span><button id="refreshServer" class="refresh-button" aria-label="Refresh server status" title="Refresh server status">↻</button></div>
+      <div class="top-actions"><button id="themeToggle" class="theme-toggle" type="button" aria-label="Dark theme" aria-pressed="false" title="Toggle dark theme"><svg class="theme-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.3A8 8 0 0 1 9.7 4a8 8 0 1 0 10.3 10.3Z"/></svg><svg class="theme-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42m0-14.14-1.42 1.42M6.35 17.65l-1.42 1.42"/></svg></button><span id="connectionStatus" class="service-status" role="status"><span class="status-dot"></span><span id="connectionLabel">Checking server</span></span><button id="refreshServer" class="refresh-button" aria-label="Refresh server status" title="Refresh server status">↻</button></div>
     </header>
 
     <main class="wrap">
       <section id="homeView" class="view home-view">
         <div class="hero-copy">
           <div class="eyebrow"><span class="eyebrow-dot"></span> A LITTLE CLOSER, NO MATTER THE DISTANCE</div>
-          <h1>Big files.<br><span>Small world.</span></h1>
+          <h1 tabindex="-1">Big files.<br><span>Small world.</span></h1>
           <p class="hero-description">A simpler way to share what matters. Send files and folders directly, wherever you are.</p>
           <div class="trust-row"><span><svg><use href="#i-lock"/></svg> Encrypted transfers</span><span class="trust-divider"></span><span><svg><use href="#i-globe"/></svg> Near or far</span></div>
         </div>
@@ -54,37 +63,53 @@
 
       <section id="sendView" class="view flow-view" hidden>
         <button class="back-link" data-home><svg><use href="#i-back"/></svg> Back to start</button>
-        <div class="flow-layout"><div class="flow-intro"><div class="eyebrow">SEND / 01</div><h1>Let’s send<br><span>something.</span></h1><p>Pick the files or folder you want to share. We’ll get a code ready for the other person.</p><div class="flow-tip"><svg><use href="#i-lock"/></svg><span>Only send after you’ve verified the matching words with the other person.</span></div></div>
+        <div class="flow-layout"><div class="flow-intro"><div class="eyebrow">SEND / 01</div><h1 tabindex="-1">Let’s send<br><span>something.</span></h1><p>Pick the files or folder you want to share. We’ll get a code ready for the other person.</p><div class="flow-tip"><svg><use href="#i-lock"/></svg><span>Only send after you’ve verified the matching words with the other person.</span></div></div>
         <div class="panel select-panel"><div class="panel-top"><div><span class="micro-label">YOUR SELECTION</span><h2>What are we sending?</h2></div><span class="step-badge">01 / 02</span></div>
-          <div class="drop-area" id="dropArea"><div class="drop-icon"><svg><use href="#i-upload"/></svg></div><strong>Drop files here</strong><span>or choose what you’d like to add</span><div class="choice-buttons"><button id="filesBtn" class="button button-outline"><svg><use href="#i-file"/></svg> Choose files</button><button id="folderBtn" class="button button-outline"><svg><use href="#i-folder"/></svg> Choose folder</button></div></div>
+          <div class="drop-area" id="dropArea"><div class="drop-icon"><svg><use href="#i-upload"/></svg></div><strong>Drop files or a folder here</strong><span>or choose what you’d like to add</span><div class="choice-buttons"><button id="filesBtn" class="button button-outline"><svg><use href="#i-file"/></svg> Choose files</button><button id="folderBtn" class="button button-outline"><svg><use href="#i-folder"/></svg> Choose folder</button></div></div>
+          <details class="selection-details"><summary>Folder support in Brave and Firefox</summary><p class="field-hint">To send from Brave or Firefox, drag one folder here, including empty subfolders. Receiving a complete folder requires destination-folder access. Brave may offer a File System Access flag; enabling a browser-wide flag changes its privacy protections. Firefox cannot currently save complete folders directly.</p></details>
           <input type="file" id="fileInput" multiple hidden>
           <div id="selection" class="selection" hidden><div class="selection-icon"><svg><use href="#i-file"/></svg></div><div class="selection-info"><strong id="selectionName"></strong><span id="selectionDetail"></span></div><button id="clearSelection" class="icon-button" title="Clear selection" aria-label="Clear selection"><svg><use href="#i-close"/></svg></button></div>
           <details id="selectionDetails" class="selection-details" hidden><summary>View selection</summary><div id="selectionPreview" class="selection-preview"></div></details>
+          <details class="selection-details preparation-guide"><summary>Preparing for a long transfer</summary><p class="field-hint">Keep both devices plugged in and awake, their tabs open, and the connection stable. The destination needs enough free disk space; browser temporary files may need extra space. Time and speed can vary.</p></details>
           <button id="startSend" class="button button-primary button-wide" disabled>Create transfer <svg><use href="#i-arrow"/></svg></button><p class="panel-note">Keep this tab open until the transfer is complete.</p>
         </div></div>
       </section>
 
       <section id="receiveView" class="view flow-view" hidden>
         <button class="back-link" data-home><svg><use href="#i-back"/></svg> Back to start</button>
-        <div class="flow-layout"><div class="flow-intro"><div class="eyebrow">RECEIVE / 01</div><h1>Something good<br><span>is on its way.</span></h1><p>Enter the code shared by the sender. We’ll connect you securely, wherever you both are.</p><div class="flow-tip"><svg><use href="#i-lock"/></svg><span>Before anything is sent, both of you will verify matching words.</span></div></div>
+        <div class="flow-layout"><div class="flow-intro"><div class="eyebrow">RECEIVE / 01</div><h1 tabindex="-1">Something good<br><span>is on its way.</span></h1><p>Enter the code shared by the sender. We’ll connect you securely, wherever you both are.</p><div class="flow-tip"><svg><use href="#i-lock"/></svg><span>Before anything is sent, both of you will verify matching words.</span></div></div>
         <div class="panel receive-panel"><div class="panel-top"><div><span class="micro-label">YOUR CONNECTION</span><h2>Enter the code</h2></div><span class="step-badge">01 / 02</span></div>
-          <label class="field-label" for="codeInput">Transfer code</label><input id="codeInput" class="code-input" type="text" maxlength="9" placeholder="XXXX-XXXX" autocomplete="off" spellcheck="false" aria-describedby="codeHelp"><p id="codeHelp" class="field-hint">Ask the sender for their 8-character code.</p>
-          <label class="field-label conflict-label" for="conflictPolicy">If a file already exists</label><select id="conflictPolicy" class="select-field"><option value="ask">Ask me for each file</option><option value="skip">Skip existing files</option><option value="replace">Replace existing files</option></select><p id="conflictHelp" class="field-hint" hidden>Your browser manages download conflicts. This setting requires destination-folder access.</p>
+          <label class="field-label" for="codeInput">Transfer code</label><input id="codeInput" class="code-input" type="text" maxlength="9" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters" enterkeyhint="go" spellcheck="false" aria-describedby="codeHelp"><p id="codeHelp" class="field-hint">Ask the sender for their 8-character code.</p>
+          <label class="field-label conflict-label" for="conflictPolicy">If a file already exists</label><select id="conflictPolicy" class="select-field"><option value="ask">Ask me for each file</option><option value="skip">Skip existing files</option><option value="replace">Replace existing files</option><option value="verify">Recover: verify matching files, ask on differences</option></select><p id="conflictDescription" class="field-hint" aria-live="polite">Each existing file needs your approval before replacement. Cancel skips it.</p><p id="conflictHelp" class="field-hint" hidden>Your browser manages download conflicts. Recovery and saved-file verification require destination-folder access.</p>
+          <label class="verify-option"><input id="verifySaved" type="checkbox"> <span>Verify each saved file <small>Reads both copies again; slower, especially for very large files.</small></span></label>
+          <details class="selection-details"><summary>Having trouble receiving a folder?</summary><p class="field-hint">Receiving complete folders needs destination-folder access. Firefox does not currently offer it. In Brave, the optional browser-wide flag brave://flags/#file-system-access-api may enable it after restarting; changing that flag affects privacy protections. You can also use desktop Chrome or Edge.</p></details>
+          <details class="selection-details preparation-guide"><summary>Preparing for a long transfer</summary><p class="field-hint">Keep both devices plugged in and awake, their tabs open, and the connection stable. Allow enough free disk space, including possible browser temporary files. Speed and time vary.</p></details>
           <button id="connectBtn" class="button button-primary button-wide">Continue <svg><use href="#i-arrow"/></svg></button><p id="receiveNote" class="panel-note">You’ll choose where to save before connecting.</p>
         </div></div>
       </section>
 
       <section id="sessionView" class="view flow-view" hidden>
-        <div class="session-heading"><div><button id="cancelTop" class="back-link"><svg><use href="#i-back"/></svg> Cancel transfer</button><div class="eyebrow session-eyebrow" id="sessionEyebrow">YOUR TRANSFER</div><h1 id="sessionTitle">Almost there<span>.</span></h1><p id="sessionSubtitle">Keep this page open while we connect.</p></div><span class="session-secure"><svg><use href="#i-lock"/></svg> PRIVATE BY DESIGN</span></div>
+        <div class="session-heading"><div><button id="cancelTop" class="back-link"><svg><use href="#i-back"/></svg> Cancel transfer</button><div class="eyebrow session-eyebrow" id="sessionEyebrow">YOUR TRANSFER</div><h1 id="sessionTitle">Almost there<span>.</span></h1><p id="sessionSubtitle" role="status" aria-live="polite">Keep this page open while we connect.</p></div><span class="session-secure"><svg><use href="#i-lock"/></svg> PRIVATE BY DESIGN</span></div>
+        <ol id="transferSteps" class="transfer-steps" aria-label="Transfer stages">
+          <li data-stage="connect"><span class="stage-number" aria-hidden="true">01</span><span>Connect</span></li>
+          <li data-stage="verify"><span class="stage-number" aria-hidden="true">02</span><span>Verify</span></li>
+          <li data-stage="transfer"><span class="stage-number" aria-hidden="true">03</span><span>Transfer</span></li>
+          <li data-stage="complete"><span class="stage-number" aria-hidden="true">04</span><span>Complete</span></li>
+        </ol>
         <div class="session-grid"><div class="panel session-main">
-          <div id="codePanel" hidden><span class="micro-label">SHARE THIS CODE</span><div class="code-row"><strong id="roomCode" class="room-code"></strong><button id="copyCode" class="icon-button copy-button" aria-label="Copy transfer code" title="Copy transfer code"><svg><use href="#i-copy"/></svg></button></div><p class="muted">Ask the other person to enter this code on VanillaWarp.</p><div class="waiting-line"><span class="pulse-dot"></span><span id="waitingText">Waiting for the other person</span></div></div>
+          <div id="codePanel" hidden><span class="micro-label">SHARE THIS CODE</span><div class="code-row"><strong id="roomCode" class="room-code" tabindex="-1"></strong><button id="copyCode" class="icon-button copy-button" aria-label="Copy transfer code" title="Copy transfer code"><svg><use href="#i-copy"/></svg></button></div><p class="muted">Ask the other person to enter this code on VanillaWarp.</p><div class="waiting-line"><span class="pulse-dot"></span><span id="waitingText">Waiting for the other person</span></div></div>
           <div id="loadingPanel"><span class="micro-label">JUST A MOMENT</span><h2 id="loadingTitle">Getting things ready.</h2><p id="loadingText" class="muted">Connecting to the server…</p><div class="waiting-line"><span class="pulse-dot"></span><span>Please keep this tab open</span></div></div>
           <div id="destinationPanel" hidden><span class="micro-label">ONE MORE THING</span><h2>Choose where to save</h2><p class="muted">Choose a destination folder before we connect.</p><button id="chooseDestination" class="button button-primary button-wide"><svg><use href="#i-folder"/></svg> Choose destination</button></div>
-          <div id="pairingPanel" hidden><span class="micro-label">VERIFY YOUR CONNECTION</span><h2>Do these words match?</h2><p class="muted">Compare these words with the other person over a trusted call or chat. Only continue if they match exactly.</p><div id="verificationWords" class="verification-words" aria-live="polite"></div><button id="verifyButton" class="button button-primary button-wide"><svg><use href="#i-check"/></svg> They match</button><button id="mismatchButton" class="text-button button-wide">They don’t match — cancel</button><p id="verificationWait" class="panel-note" hidden>Confirmed. Waiting for the other person…</p></div>
-          <div id="progressPanel" hidden><div class="progress-header"><div><span class="micro-label" id="progressLabel">TRANSFERRING</span><h2 id="progressTitle">On its way.</h2></div><strong id="progressPct">0%</strong></div><div class="progress-track" role="progressbar" id="progressTrack" aria-label="Transfer progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progressBar"></div></div><div class="progress-meta"><span id="progressBytes">0 B / 0 B</span><span id="progressSpeed">0 B/s</span></div><p id="progressFile" class="muted progress-file"></p></div>
-          <div id="donePanel" hidden><div class="done-icon"><svg><use href="#i-check"/></svg></div><span class="micro-label">ALL DONE</span><h2 id="doneTitle">Transfer complete.</h2><p id="doneText" class="muted"></p><button id="doneHome" class="button button-primary button-wide">Back to start <svg><use href="#i-arrow"/></svg></button></div>
-          <div id="errorPanel" hidden><span class="micro-label error-label">TRANSFER STOPPED</span><h2>Something went wrong.</h2><p id="errorText" class="muted"></p><button id="errorHome" class="button button-outline button-wide">Back to start</button></div>
-        </div><aside class="session-aside"><div class="aside-icon"><svg><use href="#i-lock"/></svg></div><span class="micro-label">A SAFER HANDOFF</span><h3>For your eyes<br>only.</h3><p>Files are encrypted in transit. Verify the matching words before approving a transfer.</p><div class="aside-separator"></div><p>Keep both tabs open. If you leave, you’ll need to start again.</p></aside></div>
+          <div id="pairingPanel" hidden><span class="micro-label">VERIFY YOUR CONNECTION</span><h2>Do these words match?</h2><p class="muted">Compare all eight words with the other person over a trusted call or chat. Only continue if they match exactly.</p><div id="verificationWords" class="verification-words" aria-live="polite"></div><button id="verifyButton" class="button button-primary button-wide"><svg><use href="#i-check"/></svg> They match</button><button id="mismatchButton" class="text-button button-wide">They don’t match — cancel</button><p id="verificationWait" class="panel-note" hidden>Confirmed. Waiting for the other person…</p></div>
+          <div id="progressPanel" hidden><div class="progress-header"><div><span class="micro-label" id="progressLabel">TRANSFERRING</span><h2 id="progressTitle">On its way.</h2></div><strong id="progressPct">0%</strong></div><div class="progress-track" role="progressbar" id="progressTrack" aria-label="Transfer progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progressBar"></div></div><div class="progress-meta"><span id="progressBytes">0 B / 0 B</span><span id="progressSpeed">0 B/s</span></div><details id="progressDetails" class="selection-details"><summary>Connection and time details</summary><div class="progress-meta diagnostics"><span id="progressRoute">Connection: checking…</span><span id="progressEta">ETA: —</span></div><p class="field-hint">Speed depends on both networks, devices and storage. Estimates are approximate and may change.</p></details><p id="progressFile" class="muted progress-file"></p><p id="hashHint" class="field-hint" role="status" hidden>Checking file copies. The transfer can reach 100% before checks finish.</p><p id="pauseStatus" class="field-hint" role="status" aria-live="polite"></p><button id="pauseButton" class="button button-outline button-wide" type="button">Pause transfer</button><p class="panel-note">Pause works while both tabs stay open. Data already in flight may finish saving.</p></div>
+          <div id="donePanel" hidden><div class="done-icon"><svg><use href="#i-check"/></svg></div><span class="micro-label">ALL DONE</span><h2 id="doneTitle">Transfer complete.</h2><p id="doneText" class="muted"></p><dl class="summary-grid" aria-label="Transfer summary">
+            <div><dt id="summaryCompletedLabel">Files transferred</dt><dd id="summaryCompleted">0</dd></div>
+            <div><dt>Verified &amp; reused</dt><dd id="summaryRecovered">0</dd></div>
+            <div><dt>Skipped</dt><dd id="summarySkipped">0</dd></div>
+            <div><dt>Saved copies checked</dt><dd id="summaryChecked">0</dd></div>
+          </dl><p id="summaryElapsed" class="field-hint"></p><button id="doneHome" class="button button-primary button-wide">Back to start <svg><use href="#i-arrow"/></svg></button></div>
+          <div id="errorPanel" hidden><span class="micro-label error-label">TRANSFER STOPPED</span><h2>Something went wrong.</h2><p id="errorText" class="muted"></p><p id="errorNextSteps" class="field-hint"></p><p id="errorSummary" class="summary-text" hidden></p><details id="recoveryGuide" class="selection-details"><summary>How to recover this transfer</summary><ol class="recovery-steps"><li>Sender selects the same files or folder and creates a new code.</li><li>Receiver enters that code, chooses Recover, and picks the same destination folder.</li><li>Both compare the new words and approve. Matching completed files are checked and reused; incomplete files restart.</li></ol><p class="field-hint">Recovery rereads both copies and needs destination-folder access. Already-created files and folders may remain.</p></details><button id="recoverButton" class="button button-primary button-wide">Start recovery</button><button id="errorHome" class="button button-outline button-wide">Back to start</button></div>
+        </div><aside class="session-aside"><div class="aside-icon"><svg><use href="#i-lock"/></svg></div><span class="micro-label">A SAFER HANDOFF</span><h3>For your eyes<br> only.</h3><p>Files are encrypted in transit. Verify the matching words before approving a transfer.</p><div class="aside-separator"></div><p>Keep both tabs open. If you leave, you’ll need to start again.</p></aside></div>
       </section>
       <div id="notice" class="notice" role="status" aria-live="polite" hidden><span id="noticeText"></span><button id="noticeClose" aria-label="Dismiss message">×</button></div>
     </main>

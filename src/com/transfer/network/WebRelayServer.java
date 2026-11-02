@@ -28,6 +28,7 @@ public class WebRelayServer {
     private static final Object PUBLISH_LOCK = new Object();
     private static volatile boolean published;
     private static final int MAX_BODY = 262144;
+    private static final int MAX_ROOMS = 128;
     private static final long ROOM_LIFETIME = 10 * 60 * 1000L;
     private static final String STUN = "{\"iceServers\":[{\"urls\":\"stun:stun.cloudflare.com:3478\"}],\"relay\":false}";
 
@@ -72,6 +73,12 @@ public class WebRelayServer {
 
     private static HttpHandler api(HttpHandler next) {
         return exchange -> {
+            exchange.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+            exchange.getResponseHeaders().set("Referrer-Policy", "no-referrer");
+            exchange.getResponseHeaders().set("Cache-Control", "no-store");
+            if (!exchange.getRequestURI().getPath().equals(exchange.getHttpContext().getPath())) {
+                json(exchange, 404, "{\"error\":\"Not found\"}"); return;
+            }
             String origin = exchange.getRequestHeaders().getFirst("Origin");
             if (!PAGES_ORIGIN.isBlank() && PAGES_ORIGIN.equals(origin)) {
                 exchange.getResponseHeaders().set("Access-Control-Allow-Origin", PAGES_ORIGIN);
@@ -93,6 +100,7 @@ public class WebRelayServer {
         String name = switch (path) {
             case "/", "/index.html" -> "index.html";
             case "/app.js" -> "app.js";
+            case "/hash.js" -> "hash.js";
             case "/styles.css" -> "styles.css";
             default -> null;
         };
@@ -112,8 +120,15 @@ public class WebRelayServer {
     private static void createRoom(HttpExchange e) throws IOException {
         if (!method(e, "POST")) return;
         if (!allow(roomRequests, e, 10)) { json(e, 429, "{\"error\":\"Too many rooms; retry later\"}"); return; }
-        String code, owner = token(); RoomState room = new RoomState(owner);
-        do { code = randomCode(); } while (rooms.putIfAbsent(code, room) != null);
+        String code = null, owner = token(); RoomState room = new RoomState(owner);
+        synchronized (rooms) {
+            long now = System.currentTimeMillis();
+            rooms.entrySet().removeIf(entry -> now - entry.getValue().createdAt > ROOM_LIFETIME);
+            if (rooms.size() < MAX_ROOMS) {
+                do { code = randomCode(); } while (rooms.putIfAbsent(code, room) != null);
+            }
+        }
+        if (code == null) { json(e, 503, "{\"error\":\"Server is busy; retry later\"}"); return; }
         json(e, 200, "{\"code\":\"" + code + "\",\"ownerToken\":\"" + owner + "\"}");
     }
     private static void joinRoom(HttpExchange e) throws IOException {
@@ -130,6 +145,7 @@ public class WebRelayServer {
     }
     private static void cancelRoom(HttpExchange e) throws IOException {
         if (!method(e, "POST")) return;
+        if (!allow(signalRequests, e, 600)) { json(e, 429, "{\"error\":\"Too many requests\"}"); return; }
         String code = getCode(e.getRequestURI().getRawQuery()); RoomState room = code == null ? null : rooms.get(code);
         if (room == null) { json(e, 404, "{\"error\":\"Room not found\"}"); return; }
         String owner = e.getRequestHeaders().getFirst("X-Owner-Token"), joiner = e.getRequestHeaders().getFirst("X-Join-Token");
@@ -149,9 +165,20 @@ public class WebRelayServer {
             if (payload == null) json(e, 404, "{\"error\":\"Not ready\"}"); else json(e, 200, payload);
         } else if ("POST".equals(e.getRequestMethod())) {
             String supplied = e.getRequestHeaders().getFirst(offer ? "X-Owner-Token" : "X-Join-Token");
+            // Authenticate before accepting an attacker-controlled request body.
+            synchronized (room) {
+                if (!equalToken(offer ? room.ownerToken : room.joinToken, supplied)) { json(e, 403, "{\"error\":\"Invalid token\"}"); return; }
+                if ((offer ? room.offer : room.answer) != null) { json(e, 409, "{\"error\":\"Already set\"}"); return; }
+            }
+            String contentLength = e.getRequestHeaders().getFirst("Content-Length");
+            if (contentLength != null) {
+                try { if (Long.parseLong(contentLength) > MAX_BODY) { json(e, 413, "{\"error\":\"Request too large\"}"); return; } }
+                catch (NumberFormatException ex) { json(e, 400, "{\"error\":\"Invalid content length\"}"); return; }
+            }
             String body;
             try { body = readBody(e); } catch (IOException ex) { json(e, 413, "{\"error\":\"Request too large\"}"); return; }
             synchronized (room) {
+                if (room(e) != room) { json(e, 410, "{\"error\":\"Room not found or expired\"}"); return; }
                 if (!equalToken(offer ? room.ownerToken : room.joinToken, supplied)) { json(e, 403, "{\"error\":\"Invalid token\"}"); return; }
                 if ((offer ? room.offer : room.answer) != null) { json(e, 409, "{\"error\":\"Already set\"}"); return; }
                 if (offer) room.offer = body; else room.answer = body;
